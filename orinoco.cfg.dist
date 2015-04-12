@@ -1,0 +1,8 @@
+[server]
+address=irc.your.net
+port=9999
+username=bot
+password=password
+
+[lastfm]
+apikey=1234567890abcdef...
