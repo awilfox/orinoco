@@ -7,6 +7,8 @@ import json
 from logging import basicConfig, getLogger
 from os.path import expanduser
 import requests
+import xml.dom
+from xml.dom import minidom
 
 from PyIRC.io.socket import IRCSocket
 from PyIRC.extensions import bot_recommended
@@ -40,7 +42,7 @@ arguments = {
     'extensions': bot_recommended,
     'sasl_username': config['server']['username'],
     'sasl_password': config['server']['password'],
-    'join': ['#music'],
+    'join': ['#test'],
 }
 
 admins = ['CorgiDude', 'Missingno', 'aji']
@@ -55,9 +57,9 @@ nick2lastfm = {
     'Allie': 'foxiepaws',
     'alyx': 'alyxw',
     # shmibs is herself
-    'Stelpa', 'Stelpa6',
-    'mc680x0', 'HorstBurkhardt',
-    'mc68030', 'HorstBurkhardt',
+    'Stelpa': 'Stelpa6',
+    'mc680x0': 'HorstBurkhardt',
+    'mc68030': 'HorstBurkhardt',
     # TODO: make this sqlite or something
 }
 
@@ -72,9 +74,112 @@ def api_endpoint(func, params):
     return requests.get(url, params=params)
 
 
+class Track:
+    __slots__ = ['artist', 'title', 'album',
+                 'genres', 'duration', 'loved', 'mbid', 'playing']
+
+    def __init__(self, artist, title, **kwargs):
+        self.artist = artist
+        self.title = title
+        self.album = kwargs.get('album', None)
+        self.genres = kwargs.get('genres', None)
+        self.duration = kwargs.get('duration', None)
+        self.loved = kwargs.get('loved', None)
+        self.mbid = kwargs.get('mbid', None)
+        self.playing = kwargs.get('playing', None)
+
+    def __str__(self):
+        return "{title} by {artist}".format(title=self.title,
+                                            artist=self.artist)
+
+    def format(self, fmt, **props):
+        props.update({name: getattr(self, name) for name in self.__slots__ if getattr(self, name, None) is not None})
+        return fmt.format(**props)
+
+    @classmethod
+    def from_json(cls, json):
+        assert isinstance(json, Mapping)
+
+        kw = {}
+
+        print(repr(json))
+
+        assert 'name' in json
+        assert 'artist' in json
+
+        if '#text' in json['artist']:
+            artist = json['artist']['#text']
+        else:
+            artist = str(json['artist'])
+
+        title = json['name']
+
+        if 'album' in json:
+            if '#text' in json['album']:
+                kw['album'] = json['album']['#text']
+            else:
+                kw['album'] = str(json['album'])
+
+        if '@attr' in json:
+            kw['playing'] = ('nowplaying' in json['@attr'])
+
+        return cls(artist, title, **kw)
+
+    @classmethod
+    def from_xml(cls, xml):
+        assert isinstance(xml, xml.dom.Document)
+        # TODO
+
+
 ###################
 # pretty PyIRC
 ###################
+
+class LastFM:
+    @staticmethod
+    def _most_recent_track_json(ret):
+        if 'recenttracks' not in ret or 'track' not in ret['recenttracks']:
+            return None
+
+        tracks = ret['recenttracks']['track']
+        if tracks is None or len(tracks) == 0:
+            return None
+
+        if isinstance(tracks, Mapping):
+            return Track.from_json(tracks)
+        elif isinstance(tracks, Sequence):
+            our_track = Track.from_json(tracks[0])
+            for t in tracks:
+                if '@attr' in t and 'nowplaying' in t['@attr']:
+                    our_track = Track.from_json(t)
+            return our_track
+        else:
+            return None
+
+    @staticmethod
+    def _most_recent_track_xml(ret):
+        return None
+
+    @staticmethod
+    def most_recent_track(acct):
+        doc = api_endpoint('user.getRecentTracks', {'limit': 1, 'user': acct})
+        logger.debug('response: %r', doc.text)
+
+        methods = {
+            json.loads: LastFM._most_recent_track_json,
+            minidom.parseString: LastFM._most_recent_track_xml,
+        }
+
+        for deser, ctor in methods.items():
+            try:
+                raw = deser(doc.text)
+                return ctor(raw)
+            except:
+                logger.exception('Swallowing Last.FM deserialisation exception')
+                continue
+
+        logger.warning('No appropriate deserialisation method for response.')
+        return None
 
 class Orinoco(IRCSocket):
     def __init__(self, *args, **kwargs):
@@ -91,46 +196,25 @@ class Orinoco(IRCSocket):
         return
 
     def get_np(self, target, params, user):
-        if hasattr(user, 'nick'):
-            user = user.nick
+        acct = user.nick
 
-        if user in nick2lastfm:
-            user = nick2lastfm[user]
+        if user.nick in nick2lastfm:
+            acct = nick2lastfm[user.nick]
 
-        doc = api_endpoint('user.getRecentTracks', {'limit': 1, 'user': user})
-        ret = json.loads(doc.text)
-        if 'recenttracks' not in ret or 'track' not in ret['recenttracks']:
+        if params:
+            acct = params.split(' ')[0]
+
+        track = LastFM.most_recent_track(acct)
+        if track is None:
             self.error(target, "Sorry... Last.FM may be broken...")
             return
 
-        tracks = ret['recenttracks']['track']
-        if tracks is None or len(tracks) == 0:
-            error = "Doesn't look like anything's been playing in a while!"
-            self.error(target, error)
-            return
-
-        if isinstance(tracks, Mapping):
-            our_track = tracks
-            np = ('@attr' in our_track and 'nowplaying' in our_track['@attr'])
-        elif isinstance(tracks, Sequence):
-            our_track = tracks[0]
-            np = False
-            for t in tracks:
-                if '@attr' in t and 'nowplaying' in t['@attr']:
-                    our_track = t
-                    np = True
-                    break
+        if track.playing:
+            fmt = "{acct} is listening to {title} by {artist}."
         else:
-            error = "Last.FM gave me something I don't understand :("
-            self.error(target, error)
-            return
+            fmt = "{acct} last listened to {title} by {artist}."
 
-        if np:
-            fmt = "{} is listening to {} by {}."
-        else:
-            fmt = "{} last listened to {} by {}."
-
-        msg = fmt.format(user, our_track['name'], our_track['artist']['#text'])
+        msg = track.format(fmt, acct=acct)
         self.send('PRIVMSG', [target, msg])
 
         return
@@ -141,17 +225,17 @@ class Orinoco(IRCSocket):
     def unfollow(self, target, params, user):
         return
 
-    def on_auth(self, dispatch, target, params, user):
+    def on_auth(self, target, params, admin, dispatch, user):
         """ Authentication callback. """
         if not user:
             return  # they probably don't exist any more.
 
-        if not user.account:
+        if not user.account and dispatch[0]:
             error = 'Sorry {}; you have to be authenticated.'.format(user.nick)
             self.error(target, error)
             return
 
-        if user.account not in admins:
+        if user.account not in admins and admin:
             error = "Don't violate me, {}, I'm just a little fox ._."
             self.error(target, error.format(user.nick))
             return
@@ -187,16 +271,13 @@ class Orinoco(IRCSocket):
             return
 
         disp = self.dispatch[command]
-        if disp[0]:
-            usertrack = self.extensions.get_extension('UserTrack')
-            p = partial(self.on_auth, disp[1], target, params)
-            usertrack.authenticate(sender.nick, p)
-        else:
-            disp[1](target, params, sender)
+        usertrack = self.extensions.get_extension('UserTrack')
+        p = partial(self.on_auth, target, params, *disp)
+        usertrack.authenticate(sender.nick, p)
 
 i = Orinoco(**arguments)
 
 try:
     i.loop()
 except KeyboardInterrupt:
-    i.send('QUIT', ["Interrupted!"])
+    i.send('QUIT', ['Interrupted!'])
