@@ -12,7 +12,7 @@ from xml.dom import minidom
 
 from PyIRC.io.socket import IRCSocket
 from PyIRC.extensions import bot_recommended
-from PyIRC.hook import hook
+from PyIRC.signal import event
 
 
 ###################
@@ -42,7 +42,7 @@ arguments = {
     'extensions': bot_recommended,
     'sasl_username': config['server']['username'],
     'sasl_password': config['server']['password'],
-    'join': ['#test'],
+    'join': ['#PyIRC'],
 }
 
 admins = ['CorgiDude', 'Missingno', 'aji']
@@ -242,15 +242,15 @@ class Orinoco(IRCSocket):
 
         return dispatch(target, params, user)
 
-    @hook("commands", "PRIVMSG")
-    def on_message(self, event):
+    @event("commands", "PRIVMSG")
+    def on_message(self, caller, line):
         """ Handle a PRIVMSG """
-        sender = event.line.hostmask
+        sender = line.hostmask
         if not (sender and sender.nick):
             return  # what is this, glorircd?
 
         me = self.extensions.get_extension('BasicRFC').nick
-        msg = event.line.params[-1]
+        msg = line.params[-1]
         if not msg.startswith(me):
             return  # it isn't for me :(
 
@@ -261,7 +261,7 @@ class Orinoco(IRCSocket):
         msg = msg[msg.index(' '):]
         msg = msg.lstrip()
 
-        target = event.line.params[0]
+        target = line.params[0]
         if target == me:
             target = sender.nick
 
