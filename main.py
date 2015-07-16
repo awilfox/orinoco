@@ -42,7 +42,7 @@ arguments = {
     'extensions': bot_recommended,
     'sasl_username': config['server']['username'],
     'sasl_password': config['server']['password'],
-    'join': ['#PyIRC'],
+    'join': ['#music'],
 }
 
 admins = ['CorgiDude', 'Missingno', 'aji']
@@ -242,6 +242,10 @@ class Orinoco(IRCSocket):
 
         return dispatch(target, params, user)
 
+    @event("channel", "channel_create")
+    def on_join(self, caller, channel):
+        self.send('PRIVMSG', [channel.name, "Hi!  I'm Orinoco.  Try +np."])
+
     @event("commands", "PRIVMSG")
     def on_message(self, caller, line):
         """ Handle a PRIVMSG """
@@ -251,14 +255,20 @@ class Orinoco(IRCSocket):
 
         me = self.extensions.get_extension('BasicRFC').nick
         msg = line.params[-1]
-        if not msg.startswith(me):
-            return  # it isn't for me :(
+        if msg.startswith(me):
+            msg = msg[len(me):]
+            if msg[0].isalnum():
+                return  # probably someone else with a similar nick to me :(
+            if ' ' not in msg:
+                return  # no space (someone broke their input)
+            msg = msg[msg.index(' '):]
+        elif msg.startswith('+'):
+            msg = msg[1:]
+            if not msg[0].isalpha():
+                return  # it isn't for me :(
+        else:
+            return
 
-        msg = msg[len(me):]
-        if msg[0].isalnum():
-            return  # probably someone else with a similar nick to me :(
-
-        msg = msg[msg.index(' '):]
         msg = msg.lstrip()
 
         target = line.params[0]
